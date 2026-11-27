@@ -5,6 +5,7 @@ from typing import Any
 
 from app.services.base import BaseModuleService
 from app.services.cross_module import require_entity
+from app.services.teach_award import invalidate_packages_for_material
 
 
 class TeachRecordService(BaseModuleService):
@@ -38,4 +39,14 @@ class TeachRecordService(BaseModuleService):
             if entry.get("status") in ("已归档", "已注销"):
                 return None, f"{self.ENTITY} {entry_id} 已经{entry.get('status')}，不可退回补正"
 
-        return super().run_action(entry_id, action)
+        result, message = super().run_action(entry_id, action)
+
+        # 注销联动：引用该档案的待受理送审材料包随即失效（上报受理与档案注销的冲突检测）
+        if result is not None and action == "注销档案":
+            invalidated = invalidate_packages_for_material(self.MODULE, entry_id)
+            if invalidated:
+                message += (
+                    f"；送审材料包 {'、'.join(invalidated)} 因包内材料被注销而失效，"
+                    "需补齐证明重新出包"
+                )
+        return result, message

@@ -16,6 +16,7 @@
 │   └── vite.config.ts        dev server 配置（open: false）
 ├── backend/                  FastAPI（Python） 后端
 │   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
+│   ├── app/routers/award_package.py  教学成果送审材料包接口（导出/核验/凭包受理）
 │   ├── app/services/<key>.py    每个模块独立领域逻辑
 │   ├── app/services/base.py     共享服务骨架
 │   └── app/store.py          内存数据仓库与示例数据
@@ -78,6 +79,18 @@ npm run dev
   `frontend/src/domain/<模块>.ts`，用于承载真实业务差异并维持36题位容量。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 教学成果送审材料包
+
+教学成果申报在通用动作之外，增加送审材料包流程（`app/routers/award_package.py`）：
+
+- `POST /api/teach_award/{id}/package`：初审通过的成果导出证据包（归档教案+观摩证明，
+  取自佐证材料引用的已归档教学档案）。同一成果重复导出返回同一个包，供传阅。
+- `GET /api/teach_award/packages/{包编号}`：核验包状态——待受理（可受理）/
+  已失效（需补齐证明重新出包）/已受理（可查当时两件材料快照）。
+- `POST /api/teach_award/{id}/submit`：评审员交回包编号后凭包受理上报，
+  成果待办登记本次受理。包绑定成果，他项成果即使用同名教案也不能凭包上报；
+  包内材料被注销则包失效，受理被拦截，不允许原教案拼配未确认替代证明。
 
 领域：应用开发
 子方向：web前端/全栈开发

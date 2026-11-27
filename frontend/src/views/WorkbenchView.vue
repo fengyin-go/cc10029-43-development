@@ -60,6 +60,15 @@
             >
               {{ action }}
             </button>
+            <button
+              v-if="meta.packageFlow"
+              class="link"
+              type="button"
+              :data-testid="`export-package-${row.id}`"
+              @click="exportPackage(row)"
+            >
+              导出证据包
+            </button>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -86,8 +95,50 @@
       </form>
     </div>
 
+    <div v-if="submitRow" class="modal-backdrop" data-testid="submit-modal">
+      <div class="modal">
+        <h3>上报评审受理 — {{ submitRow['成果名称'] }}</h3>
+        <p class="package-hint">请输入评审员交回的材料包编号，先核验包状态再确认上报。</p>
+        <label class="create-field">
+          <span>材料包编号</span>
+          <input v-model="packageNo" data-testid="package-no" placeholder="如 K-1" />
+        </label>
+        <div class="page-actions">
+          <button class="btn" type="button" data-testid="verify-package" :disabled="verifying" @click="verifyPackage">
+            {{ verifying ? '核验中…' : '核验材料包' }}
+          </button>
+        </div>
+        <div v-if="packageView" class="package-view" data-testid="package-view" :data-status="packageView.状态">
+          <p>
+            <strong>{{ packageView.包编号 }}</strong>
+            <span class="package-status">{{ packageView.状态 }}</span>
+          </p>
+          <ul class="package-materials">
+            <li v-for="mat in packageView.材料" :key="mat.材料ID">
+              {{ mat.档案类型 }}《{{ mat.名称 }}》（档案 #{{ mat.材料ID }}，导出时{{ mat.导出时状态 }}）
+            </li>
+          </ul>
+          <p v-if="packageView.失效原因" class="error-text">失效原因：{{ packageView.失效原因 }}</p>
+          <p class="package-tip">{{ packageView.提示 }}</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn" type="button" @click="closeSubmit">取消</button>
+          <button
+            class="btn primary"
+            data-testid="confirm-submit"
+            type="button"
+            :disabled="submitting || !packageView || !packageView.可受理"
+            @click="confirmSubmit"
+          >
+            {{ submitting ? '提交中…' : '确认上报' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <footer class="page-foot">
       <span>共 {{ total }} 条{{ meta.name }}记录</span>
+      <span v-if="noticeMessage" class="notice-text" data-testid="notice">{{ noticeMessage }}</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
   </section>
@@ -99,22 +150,32 @@ import { computed, onMounted, ref } from 'vue'
 import {
   createEntry,
   downloadEntries,
+  exportAwardPackage,
   listEntries,
   moduleMeta,
   runAction as applyAction,
+  submitAwardWithPackage,
+  verifyAwardPackage,
 } from '@/api/backend-service'
-import type { EntryRow } from '@/data/types'
+import type { AwardPackageView, EntryRow } from '@/data/types'
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
 const errorMessage = ref('')
+const noticeMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+// 送审材料包流程（教学成果申报）：凭包受理上报单
+const submitRow = ref<EntryRow | null>(null)
+const packageNo = ref('')
+const packageView = ref<AwardPackageView | null>(null)
+const verifying = ref(false)
+const submitting = ref(false)
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -132,11 +193,13 @@ const statusSummary = computed(() =>
 
 function resetFilters() {
   filters.value = {}
+  noticeMessage.value = ''
   void reload()
 }
 
 async function exportRows() {
   errorMessage.value = ''
+  noticeMessage.value = ''
   try {
     await downloadEntries(meta.key, filters.value)
   } catch (error) {
@@ -147,6 +210,7 @@ async function exportRows() {
 function openCreate() {
   createValues.value = Object.fromEntries(meta.fields.map((field) => [field, '']))
   errorMessage.value = ''
+  noticeMessage.value = ''
   showCreate.value = true
 }
 
@@ -167,12 +231,79 @@ async function submitCreate() {
 
 async function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
+  noticeMessage.value = ''
+  // 教学成果申报的上报评审必须凭送审材料包编号，打开受理上报单
+  if (meta.packageFlow && action === '上报评审') {
+    openSubmit(row)
+    return
+  }
   try {
     const result = await applyAction(meta.key, Number(row.id), action)
     if (!result.ok) throw new Error(result.message)
     await reload()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '操作失败'
+  }
+}
+
+async function exportPackage(row: EntryRow) {
+  errorMessage.value = ''
+  noticeMessage.value = ''
+  try {
+    const result = await exportAwardPackage(Number(row.id))
+    if (!result.ok) throw new Error(result.message)
+    noticeMessage.value = result.message
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '导出证据包失败'
+  }
+}
+
+function openSubmit(row: EntryRow) {
+  submitRow.value = row
+  packageNo.value = ''
+  packageView.value = null
+  errorMessage.value = ''
+  noticeMessage.value = ''
+}
+
+function closeSubmit() {
+  submitRow.value = null
+  packageView.value = null
+}
+
+async function verifyPackage() {
+  if (!packageNo.value.trim()) {
+    errorMessage.value = '请先填写材料包编号'
+    return
+  }
+  verifying.value = true
+  errorMessage.value = ''
+  try {
+    const result = await verifyAwardPackage(packageNo.value.trim())
+    if (!result.ok || !result.package) throw new Error(result.message)
+    packageView.value = result.package
+  } catch (error) {
+    packageView.value = null
+    errorMessage.value = error instanceof Error ? error.message : '材料包核验失败'
+  } finally {
+    verifying.value = false
+  }
+}
+
+async function confirmSubmit() {
+  if (!submitRow.value) return
+  submitting.value = true
+  errorMessage.value = ''
+  try {
+    const result = await submitAwardWithPackage(Number(submitRow.value.id), packageNo.value.trim())
+    if (!result.ok) throw new Error(result.message)
+    noticeMessage.value = result.message
+    closeSubmit()
+    await reload()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '上报受理失败'
+  } finally {
+    submitting.value = false
   }
 }
 
